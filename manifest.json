@@ -1,0 +1,11 @@
+{
+  "name": "勤怠打刻 - はた歯科医院",
+  "short_name": "打刻",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#f4f6f8",
+  "theme_color": "#0e7c86",
+  "icons": [
+    { "src": "icon-180.png", "sizes": "180x180", "type": "image/png" }
+  ]
+}
