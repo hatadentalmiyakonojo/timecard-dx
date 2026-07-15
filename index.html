@@ -203,7 +203,7 @@ pre.csv{ background:#0f2530; color:#cfe8e5; font-size:12px; padding:12px; border
    出力: 給与計算アプリ.html の勤怠CSVスキーマに完全準拠
    date,employee_id,clock_in,clock_out,break_minutes,leave_type,outing_minutes
    ========================================================================= */
-const APP_VERSION = '1.0.0';
+const APP_VERSION = '1.1.0';
 const DATA_SCHEMA = 1;
 const NS = 'dakoku_';                       // 同一オリジン他アプリとのlocalStorage衝突回避
 const UNDO_SECONDS = 10;                    // 打刻直後の取消可能時間
@@ -294,6 +294,13 @@ let cal = Calendar(settings);
 let staff = lsGet('staff_v1', []);   // [{id,name,active,order}]
 function saveStaff(){ lsSet('staff_v1', staff); }
 function activeStaff(){ return staff.filter(s=>s.active).sort((a,b)=>(a.order-b.order)||(a.id-b.id)); }
+// 管理画面・締め用: 在籍中に加え、退職済みでもその月にデータがある人を含める
+// （退職月に「在籍」を外しても最終月の給与CSVから漏れないように）
+function staffForMonth(doc, staffList){
+  const hasData = s => doc.punches.some(p=>p.sid===s.id && !p.void) ||
+    Object.keys(doc.days).some(k=>k.startsWith(s.id+'|'));
+  return staffList.filter(s=>s.active || hasData(s)).sort((a,b)=>(a.order-b.order)||(a.id-b.id));
+}
 
 function monthKeyOf(dstr){ return dstr.slice(0,7); }
 function emptyMonthDoc(){ return {schema:DATA_SCHEMA, punches:[], days:{}, corrections:[], closed:null}; }
@@ -411,7 +418,10 @@ function validateMonth(staffList, doc, ym, calendar, opts){
       if((leave==='half_paid_am'||leave==='half_paid_pm') && !C.halfPaidAllowed(dstr)){
         B(s.id,dstr,'半日有給は月火水金と祝日週の木曜のみ設定できます'); continue; }
       // 4. 所定日に打刻も休暇区分もない → 満額払いになるためブロック
-      if(sch && !ps.length && leave==='none'){ B(s.id,dstr,'打刻も休暇区分もありません','noData'); continue; }
+      if(sch && !ps.length && leave==='none'){
+        if(s.active===false){ W(s.id,dstr,'データなし（退職済みのため参考。退職日より後ならそのままでOK）','noData'); }
+        else B(s.id,dstr,'打刻も休暇区分もありません','noData');
+        continue; }
       if(!ps.length) continue;
       const has = ty => ps.filter(p=>p.ty===ty);
       const ins=has('in'), outs=has('out');
@@ -470,7 +480,9 @@ function quickFix(sid, dstr, action){
   const ym=monthKeyOf(dstr), doc=loadMonth(ym);
   const leave=dayLeave(doc,sid,dstr);
   const st=scheduledTimes(dstr, leave);
+  const hasTy = ty => validPunches(doc,sid,dstr).some(p=>p.ty===ty);
   const addP=(ty,t,note)=>{
+    if(hasTy(ty)) return; // 二重補完ガード（画面が古いままボタンを押した場合など）
     addCorrection(ym,{kind:'add',sid,d:dstr,before:null,after:{ty,t},note});
     doc.punches.push({id:genId(),sid,d:dstr,t,ty,at:Date.now(),src:'admin',ph:0,void:0,void_by:null});
   };
@@ -619,7 +631,7 @@ function showToast(o){
   t.className='toast'+(o.err?' err':'');
   let inner = '';
   if(o.punch) inner += `<img data-toastimg="${o.punch.id}" alt="">`;
-  inner += `<div class="toastMsg">${o.msg}<small>${o.sub||''}</small></div>`;
+  inner += `<div class="toastMsg">${esc(o.msg)}<small>${esc(o.sub||'')}</small></div>`;
   if(o.punch) inner += `<button data-undo>取消 <span data-cnt>${UNDO_SECONDS}</span></button>`;
   t.innerHTML = inner;
   wrap.appendChild(t);
@@ -829,14 +841,15 @@ function ymSelector(id, val, onchange){
 /* ---------- ①月次カレンダー ---------- */
 function renderCalTab(body){
   const ym=adminYM, doc=loadMonth(ym), last=lastDayOf(ym);
-  const {blocks,warns} = validateMonth(activeStaff(), doc, ym, cal, {full:false});
+  const monthStaff = staffForMonth(doc, staff);
+  const {blocks,warns} = validateMonth(monthStaff, doc, ym, cal, {full:false});
   const issueSet = new Set([...blocks,...warns].map(x=>x.sid+'|'+x.d));
   const today=todayStr();
   let head='<tr><th class="name">スタッフ</th>';
   for(let d=1;d<=last;d++){ const dstr=ym+'-'+pad2(d);
     head+=`<th>${d}<br><span style="font-weight:400">${WEEK[dow(dstr)]}</span></th>`; }
   head+='</tr>';
-  const rows = activeStaff().map(s=>{
+  const rows = monthStaff.map(s=>{
     let tds='';
     for(let d=1;d<=last;d++){
       const dstr=ym+'-'+pad2(d);
@@ -991,7 +1004,7 @@ function openPhotoModal(blob, caption){
 /* ---------- ②異常一覧 ---------- */
 function renderIssuesTab(body){
   const ym=adminYM, doc=loadMonth(ym);
-  const {blocks,warns,infos}=validateMonth(activeStaff(),doc,ym,cal,{full:false});
+  const {blocks,warns,infos}=validateMonth(staffForMonth(doc, staff),doc,ym,cal,{full:false});
   const li=issueLi;
   body.innerHTML=`<div class="panel">
     <div class="rowFlex"><div><label class="f">対象月</label>${ymSelector('isYM',ym,"adminYM=this.value;adminTab('issues')")}</div>
@@ -1010,8 +1023,8 @@ let closeYM = (()=>{ const t=new Date(); const d=new Date(t.getFullYear(),t.getM
   return `${d.getFullYear()}-${pad2(d.getMonth()+1)}`; })();
 function renderCloseTab(body){
   const ym=closeYM, doc=loadMonth(ym);
-  const {blocks,warns}=validateMonth(activeStaff(),doc,ym,cal,{full:true});
-  const rows=buildMonthRows(activeStaff(),doc,ym);
+  const {blocks,warns}=validateMonth(staffForMonth(doc, staff),doc,ym,cal,{full:true});
+  const rows=buildMonthRows(staffForMonth(doc, staff),doc,ym);
   const csv=rowsToCSV(rows);
   const canExport = blocks.length===0 && rows.length>0;
   const closedInfo = doc.closed ?
@@ -1040,7 +1053,7 @@ function renderCloseTab(body){
 }
 function exportCSV(mode){
   const ym=closeYM, doc=loadMonth(ym);
-  const csv=rowsToCSV(buildMonthRows(activeStaff(),doc,ym));
+  const csv=rowsToCSV(buildMonthRows(staffForMonth(doc, staff),doc,ym));
   const fname=`勤怠_${ym}.csv`;
   if(mode==='copy'){
     navigator.clipboard.writeText(csv).then(()=>alert('コピーしました'),()=>alert('コピーできませんでした'));
@@ -1057,7 +1070,7 @@ function exportCSV(mode){
 }
 function markClosed(){
   const ym=closeYM, doc=loadMonth(ym);
-  doc.closed={at:Date.now(), csv:rowsToCSV(buildMonthRows(activeStaff(),doc,ym))};
+  doc.closed={at:Date.now(), csv:rowsToCSV(buildMonthRows(staffForMonth(doc, staff),doc,ym))};
   saveMonth(ym); adminTab('close');
 }
 
@@ -1380,6 +1393,19 @@ function runSelfTests(){
   const d12=emptyMonthDoc();
   d12.punches.push({id:'a',sid:1,d:'2026-07-01',t:'08:30',ty:'in',at:1,src:'tap',ph:0,void:0});
   T.push(['CSV: 月外の打刻は出力されない', buildMonthRows(st1,d12,'2026-06').length===0]);
+  // 退職者（在籍オフ）でも当月データがあれば締め対象に含まれる（給与未払い防止）
+  const dRet=emptyMonthDoc();
+  dRet.punches.push({id:'a',sid:5,d:'2026-06-01',t:'08:30',ty:'in',at:1,src:'tap',ph:0,void:0});
+  const stRet=[{id:1,name:'A',active:true,order:1},{id:5,name:'退職',active:false,order:5},
+    {id:9,name:'無関係退職',active:false,order:9}];
+  const sfm=staffForMonth(dRet, stRet);
+  T.push(['締め対象: 退職者でも当月打刻ありは含む', sfm.some(s=>s.id===5)]);
+  T.push(['締め対象: 退職者でデータなしは含まない', !sfm.some(s=>s.id===9)]);
+  T.push(['CSV: 退職者の打刻が出力される',
+    buildMonthRows(sfm,dRet,'2026-06').some(r=>r[1]===5)]);
+  const vRet=validateMonth(sfm,dRet,'2026-06',C,{full:true});
+  T.push(['検証: 退職者の空白日はブロックでなく警告',
+    !vRet.blocks.some(x=>x.sid===5&&x.d!=='2026-06-01') && vRet.warns.some(x=>x.sid===5)]);
   // localStorage ラウンドトリップ
   T.push(['保存: 月ドキュメントの読み書き一致', (()=>{ try{
     const k='__selftest'; const v={punches:[{id:'a'}],days:{},corrections:[],closed:null};
