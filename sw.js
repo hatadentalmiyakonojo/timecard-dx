@@ -17,6 +17,9 @@ self.addEventListener('activate', e => {
 });
 self.addEventListener('fetch', e => {
   if (e.request.method !== 'GET') return;
+  // 外部（院内保管庫の Mac mini 等）への通信には手を出さない。横取りすると Mac mini の返事
+  // （職員の記録）が iPad のキャッシュに残り、つながらない時に古い内容を最新のように返してしまう
+  if (new URL(e.request.url).origin !== location.origin) return;
   // ネット優先・失敗時キャッシュ（更新は同一URL上書き運用のため常に最新を試す）
   e.respondWith(
     fetch(e.request).then(r => {
