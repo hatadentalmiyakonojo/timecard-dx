@@ -769,7 +769,7 @@ pre.csv{ background:#0f2530; color:#cfe8e5; font-size:12px; padding:12px; border
    出力: 給与計算アプリ.html の勤怠CSVスキーマに完全準拠
    date,employee_id,clock_in,clock_out,break_minutes,leave_type,outing_minutes
    ========================================================================= */
-const APP_VERSION = '1.2.0';
+const APP_VERSION = '1.2.1';
 const DATA_SCHEMA = 1;
 const NS = 'dakoku_';                       // 同一オリジン他アプリとのlocalStorage衝突回避
 const UNDO_SECONDS = 10;                    // 打刻直後の取消可能時間
@@ -883,6 +883,21 @@ function loadMonth(ym){
   return monthCache[ym];
 }
 function saveMonth(ym){ lsSet('m_'+ym+'_v1', monthCache[ym]); }
+/* 打刻・修正の保存はこちら。保存に失敗したら（iPadの保存できる量がいっぱい等）、画面の上に赤い帯を出して知らせる。
+   記録は画面（メモリ）には残り、次に保存できたときに一緒に書かれる。帯は保存できたら消える。
+   ※バックアップからの復元は、失敗を例外で受けて元に戻すので saveMonth を使う */
+function saveMonthOrWarn(ym){
+  try{ saveMonth(ym); storeWarn(false); return true; }
+  catch(e){ storeWarn(true); return false; }
+}
+function storeWarn(on){
+  let el=document.getElementById('storeErr');
+  if(!on){ if(el) el.remove(); return; }
+  if(!el){ el=document.createElement('div'); el.id='storeErr'; el.setAttribute('role','alert');
+    el.style.cssText='position:fixed;left:0;right:0;top:0;z-index:9999;padding:12px 16px;background:#b91c1c;color:#fff;font-size:17px;font-weight:700;text-align:center;line-height:1.5';
+    document.body.appendChild(el); }
+  el.textContent='⚠ 打刻を保存できませんでした（iPadの保存できる量がいっぱいの可能性）。紙に時刻を書いて、院長に知らせてください。';
+}
 function listMonthKeys(){
   const out=[]; for(let i=0;i<localStorage.length;i++){ const k=localStorage.key(i);
     const m=k && k.match(new RegExp('^'+NS+'m_(\\d{4}-\\d{2})_v1$')); if(m) out.push(m[1]); }
@@ -1071,7 +1086,7 @@ function quickFix(sid, dstr, action){
   } else if(action==='fillBreak' && st && st.bs){
     addP('bs',st.bs,'休憩打刻なし→所定時刻で自動補完'); addP('be',st.be,'休憩打刻なし→所定時刻で自動補完');
   }
-  saveMonth(ym);
+  saveMonthOrWarn(ym);
   adminTab(currentTab);
 }
 // 異常リストの1行（issues/closeタブ共用。fixがあればワンタップ修正ボタンを付ける）
@@ -1190,11 +1205,11 @@ async function doPunch(sid){
   }
   const blob = await camCapture(); // 打刻より先にフレーム確保（ゼロ遅延）
   const p = {id:genId(), sid, d:dstr, t:hm, ty, at:now.getTime(), src:'tap', ph:0, void:0, void_by:null};
-  doc.punches.push(p); saveMonth(ym);          // 打刻データを先に確定保存
+  doc.punches.push(p); saveMonthOrWarn(ym);          // 打刻データを先に確定保存
   renderGrid();
   if(blob){
     photoPut({punch_id:p.id, sid, at:p.at, blob}).then(()=>{
-      p.ph=1; saveMonth(ym);
+      p.ph=1; saveMonthOrWarn(ym);
       const img=document.querySelector(`[data-toastimg="${p.id}"]`);
       if(img) blobToImg(blob, img);
     }).catch(()=>{});
@@ -1232,7 +1247,7 @@ function showToast(o){
       if(o.chooseOnly){ punchWithType(o.sid, ty); return; } // punchWithType側のトーストが置き換える
       const doc=loadMonth(o.ym);
       const p=doc.punches.find(x=>x.id===o.punch.id);
-      if(p){ p.ty=ty; saveMonth(o.ym); renderGrid(); }
+      if(p){ p.ty=ty; saveMonthOrWarn(o.ym); renderGrid(); }
       panel.querySelectorAll('button').forEach(x=>x.classList.toggle('cur',x.dataset.ty===ty));
       t.querySelector('.toastMsg').firstChild.textContent =
         `${staff.find(x=>x.id===p.sid).name}さん ${PUNCH_TYPES[ty]} ${p.t} ✓`;
@@ -1242,7 +1257,7 @@ function showToast(o){
   if(undoBtn) undoBtn.onclick = ()=>{
     const doc=loadMonth(o.ym);
     const p=doc.punches.find(x=>x.id===o.punch.id);
-    if(p){ p.void=1; p.void_by='self'; saveMonth(o.ym); renderGrid(); }
+    if(p){ p.void=1; p.void_by='self'; saveMonthOrWarn(o.ym); renderGrid(); }
     clearAll();
   };
   let left = UNDO_SECONDS;
@@ -1260,8 +1275,8 @@ async function punchWithType(sid, ty){ // 種別指定打刻（退勤済み後�
   if(dup){ showToast({err:true,msg:`${s.name}さん ${PUNCH_TYPES[ty]}は ${dup.t} に打刻済みです`}); return; }
   const blob=await camCapture();
   const p={id:genId(),sid,d:dstr,t:hm,ty,at:now.getTime(),src:'tap',ph:0,void:0,void_by:null};
-  doc.punches.push(p); saveMonth(ym); renderGrid();
-  if(blob){ photoPut({punch_id:p.id,sid,at:p.at,blob}).then(()=>{ p.ph=1; saveMonth(ym); }); }
+  doc.punches.push(p); saveMonthOrWarn(ym); renderGrid();
+  if(blob){ photoPut({punch_id:p.id,sid,at:p.at,blob}).then(()=>{ p.ph=1; saveMonthOrWarn(ym); }).catch(()=>{ /* 写真は控え。打刻の記録は保存済み */ }); }
   showToast({msg:`${s.name}さん ${PUNCH_TYPES[ty]} ${hm} ✓`, sub:'間違えたら「取消」（10秒間）', punch:p, ym, blob});
 }
 
@@ -1463,7 +1478,7 @@ function renderCalTab(body){
 function addCorrection(ym, entry){
   const doc=loadMonth(ym);
   doc.corrections.push(Object.assign({id:genId(), at:Date.now()}, entry));
-  saveMonth(ym);
+  saveMonthOrWarn(ym);
 }
 async function openDayEditor(sid, dstr){
   const ym=monthKeyOf(dstr), doc=loadMonth(ym);
@@ -1524,7 +1539,7 @@ async function openDayEditor(sid, dstr){
       const pid=b.closest('.punchRow').dataset.pid;
       const p=doc.punches.find(x=>x.id===pid);
       addCorrection(ym,{kind:'void',sid,d:dstr,before:{ty:p.ty,t:p.t},after:null,note:note()});
-      p.void=1; p.void_by='admin'; saveMonth(ym); openDayEditor(sid,dstr);
+      p.void=1; p.void_by='admin'; saveMonthOrWarn(ym); openDayEditor(sid,dstr);
     };
   });
   root.querySelectorAll('[data-reclass]').forEach(b=>{
@@ -1533,7 +1548,7 @@ async function openDayEditor(sid, dstr){
       const p=doc.punches.find(x=>x.id===pid);
       const map={bs:'os',os:'bs',be:'oe',oe:'be'};
       addCorrection(ym,{kind:'reclass',sid,d:dstr,before:{ty:p.ty,t:p.t},after:{ty:map[p.ty],t:p.t},note:note()});
-      p.ty=map[p.ty]; saveMonth(ym); openDayEditor(sid,dstr);
+      p.ty=map[p.ty]; saveMonthOrWarn(ym); openDayEditor(sid,dstr);
     };
   });
   root.querySelector('#addBtn').onclick=()=>{
@@ -1542,7 +1557,7 @@ async function openDayEditor(sid, dstr){
     if(!t){ msg.textContent='追加する時刻を入力してください'; return; }
     addCorrection(ym,{kind:'add',sid,d:dstr,before:null,after:{ty,t},note:note()});
     doc.punches.push({id:genId(),sid,d:dstr,t,ty,at:Date.now(),src:'admin',ph:0,void:0,void_by:null});
-    saveMonth(ym); openDayEditor(sid,dstr);
+    saveMonthOrWarn(ym); openDayEditor(sid,dstr);
   };
   root.querySelector('#saveDay').onclick=()=>{
     // 時刻・種別の編集を差分検出して保存
@@ -1568,7 +1583,7 @@ async function openDayEditor(sid, dstr){
       if(nl==='none') delete doc.days[sid+'|'+dstr];
       else doc.days[sid+'|'+dstr]={leave:nl};
     }
-    saveMonth(ym); closeModal();
+    saveMonthOrWarn(ym); closeModal();
     if(currentTab) adminTab(currentTab);
   };
 }
@@ -1653,7 +1668,7 @@ function exportCSV(mode){
 function markClosed(){
   const ym=closeYM, doc=loadMonth(ym);
   doc.closed={at:Date.now(), csv:rowsToCSV(buildMonthRows(staffForMonth(doc, staff),doc,ym))};
-  saveMonth(ym); adminTab('close');
+  saveMonthOrWarn(ym); adminTab('close');
 }
 
 /* ---------- ④スタッフ ---------- */
